@@ -191,10 +191,17 @@ http
       } else if (url.pathname === '/api/edge') {
         // verified data (TxLINE) → LLM call: the on-thesis product, shared with the agent via analyzeEdge.
         const fixtureId = url.searchParams.get('fixtureId') ?? ''
-        const [odds, fixtures] = await Promise.all([
-          txGet(`/api/odds/snapshot/${fixtureId}`),
+        const [live, fixtures] = await Promise.all([
+          txGet(`/api/odds/snapshot/${fixtureId}`).catch(() => []),
           txGet('/api/fixtures/snapshot'),
         ])
+        // the free feed flickers to empty between calls — fall back to the odds the board already
+        // verified for this fixture, so the call never sees "no data" for a fixture the board shows.
+        let odds = live
+        if (!(Array.isArray(odds) && (odds as any[]).some(hasFinitePrice))) {
+          const fromBoard = (await board()).find((f) => String(f.FixtureId) === fixtureId)
+          if (fromBoard) odds = fromBoard.odds
+        }
         res.end(JSON.stringify(await analyzeEdge({ fixtureId, odds, fixtures })))
       } else if (url.pathname === '/api/settle') {
         // real devnet escrow deposit→release so the demo links the settlement on-chain.

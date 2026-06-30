@@ -63,21 +63,37 @@ const DEMO_ODDS = {
 }
 const demoOddsFor = (id) => DEMO_ODDS[id] ?? mkt([45, 27, 28])
 
-// client-side deterministic edge (used when the proxy/LLM is offline) — mirrors agent/edge.ts
-function detCall(m, teams) {
-  const names = m.PriceNames, pcts = m.Pct
-  let bi = -1, bp = -1
-  names.forEach((_, i) => { const p = Number(pcts[i]); if (Number.isFinite(p) && p > bp) { bp = p; bi = i } })
-  if (bi < 0) return { call: 'odds unavailable' }
-  const label = names[bi] === 'part1' ? teams.home : names[bi] === 'part2' ? teams.away : 'Draw'
-  return { call: `Odds favour ${label} (${bp.toFixed(0)}%)`, confidence: Number((bp / 100).toFixed(2)), note: 'deterministic (demo)' }
+// fair (break-even) decimal odds = 100 / implied probability — the price a book must beat for value.
+const fairOdds = (pct) => { const p = Number(pct); return Number.isFinite(p) && p > 0 ? 100 / p : NaN }
+const fmtOdds = (pct) => { const o = fairOdds(pct); return Number.isFinite(o) ? o.toFixed(2) : '—' }
+
+// client-side fair line + read (used when the proxy/LLM is offline) — mirrors agent/edge.ts
+function clientFair(m, teams) {
+  const labelOf = { part1: teams.home, part2: teams.away, draw: 'Draw', over: 'Over', under: 'Under' }
+  const outcomes = []
+  ;(m.PriceNames || []).forEach((name, i) => {
+    const pct = Number((m.Pct || [])[i])
+    if (Number.isFinite(pct) && pct > 0) outcomes.push({ name, label: labelOf[name] ?? name, pct, fairOdds: Number(fairOdds(pct).toFixed(2)) })
+  })
+  const favourite = outcomes.reduce((b, o) => (!b || o.pct > b.pct ? o : b), undefined)
+  return { outcomes, favourite }
+}
+function clientRead(fair) {
+  const f = fair.favourite
+  if (!f) return { call: 'no priced market for this fixture', confidence: 0, note: 'deterministic' }
+  const alt = fair.outcomes.filter((o) => o !== f).sort((a, b) => b.pct - a.pct)[0]
+  return {
+    call: `${f.label} is the verified favourite at ${f.pct.toFixed(0)}% — fair odds ${f.fairOdds.toFixed(2)}${alt ? `; ${alt.label} the main alternative at ${alt.pct.toFixed(0)}%` : ''}.`,
+    confidence: Number((f.pct / 100).toFixed(2)), note: 'deterministic (demo)',
+  }
 }
 const clientEdge = (fx) => {
-  // prefer the fixture's real inlined 1X2 odds (live board); only fall back to the demo board offline
-  const live = Array.isArray(fx.odds) ? fx.odds.find((x) => String(x.SuperOddsType ?? '').includes('1X2')) : null
+  // prefer the fixture's real inlined odds (live board); only fall back to the demo board offline
+  const live = Array.isArray(fx.odds) ? (fx.odds.find((x) => String(x.SuperOddsType ?? '').includes('1X2')) ?? fx.odds.find(hasUsablePct)) : null
   const m = live?.PriceNames ? live : demoOddsFor(fx.FixtureId)[0]
   const teams = { home: fx.Participant1, away: fx.Participant2 }
-  return { fixtureId: String(fx.FixtureId), teams, market: { names: m.PriceNames, pct: m.Pct }, analysis: detCall(m, teams), demo: !live }
+  const fair = clientFair(m, teams)
+  return { fixtureId: String(fx.FixtureId), teams, market: { names: m.PriceNames, pct: m.Pct }, fair, analysis: clientRead(fair), demo: !live }
 }
 const ESCROW_PROGRAM = 'R5NWNg9eRLWWQU81Xbzz5Du1k7jTDeeT92Ty6qCeXet'
 const SETTLE_SOL = 0.0005
@@ -112,19 +128,20 @@ function Board({ fixture, odds, loading }) {
   const fmt = (p) => (Number.isFinite(p) ? p.toFixed(0) : '—')
   return html`
     <div class="board">
-      <div class="board-head"><span>${m.Bookmaker} · ${m.SuperOddsType}</span><span>implied probability</span></div>
+      <div class="board-head"><span>${m.Bookmaker} · ${m.SuperOddsType}</span><span class="bh-cols"><span>fair prob</span><span>fair odds</span></span></div>
       ${names.map((name, i) => html`
         <div class=${'outcome' + (i === favI ? ' fav' : '')} key=${name}>
           <span class="label">${labelOf[name] ?? name}</span>
           <span class="track"><span class=${'fill ' + (cls[name] ?? 'draw')} style=${{ width: `${Number.isFinite(pct[i]) ? Math.min(100, pct[i]) : 0}%` }}></span></span>
           <span class="val">${fmt(pct[i])}%</span>
+          <span class="odds">${fmtOdds(pct[i])}</span>
         </div>`)}
       <div class="edge">
-        <span class="e-ico">⚡</span>
-        <span class="e-text"><b>${favLabel}</b> is the value pick at <b>${fmt(pct[favI])}%</b>
-          <div class="e-sub">de-margined implied probability — the verified input the agent turns into a one-line call</div>
+        <span class="e-ico">🎯</span>
+        <span class="e-text"><b>${favLabel}</b> — verified favourite at <b>${fmt(pct[favI])}%</b> · fair price <b>${fmtOdds(pct[favI])}</b>
+          <div class="e-sub">fair (break-even) odds = 100 ÷ probability — a bet only has value ABOVE this price</div>
         </span>
-        <span class="e-cta">txline edge ${fixture.FixtureId}</span>
+        <span class="e-cta">txline ${fixture.FixtureId}</span>
       </div>
     </div>`
 }
@@ -141,21 +158,59 @@ function MatchCard({ fx, on, onSelect }) {
     </div>`
 }
 
-// the agent's LLM value call (verified odds → one-line call) — the middle pillar
+// the agent's read of the verified fair line (+ the break-even price) — the product being sold
 function EdgeCard({ edge }) {
-  if (!edge) return html`<div class="edgecard"><p class="muted">analysing the edge…</p></div>`
+  if (!edge) return html`<div class="edgecard"><p class="muted">reading the fair line…</p></div>`
   const a = edge.analysis || {}
+  const fav = edge.fair?.favourite
   const conf = typeof a.confidence === 'number' ? Math.round(a.confidence * 100) : null
   const det = /deterministic/i.test(a.note || '')
   return html`
     <div class="edgecard">
-      <div class="ec-head"><span class="ec-tag">🤖 agent's call</span>
+      <div class="ec-head"><span class="ec-tag">🤖 agent's read</span>
         <span class=${'ec-badge' + (det ? '' : ' llm')}>${det ? 'deterministic' : 'LLM'}</span></div>
       <p class="ec-call">${a.call}</p>
+      ${fav && html`
+        <div class="ec-beat">
+          <span class="ec-beat-l">price to beat</span>
+          <b>${fav.label} @ ${fav.fairOdds.toFixed(2)}</b>
+          <span class="ec-beat-s">a bet has value only if a book offers more than this</span>
+        </div>`}
       ${conf != null && html`
-        <div class="ec-conf"><span>confidence</span>
+        <div class="ec-conf"><span>how decisive</span>
           <div class="ec-bar"><div class="ec-fill" style=${{ width: `${conf}%` }}></div></div><b>${conf}%</b></div>`}
+      <p class="ec-honest">A read of the <b>verified fair line</b>, not a tip. Calling true "value" needs a sportsbook's
+        offered price to compare against — the free TxODDS tier carries only the fair line.</p>
     </div>`
+}
+
+// the explainer — what the app actually does, end to end, threaded with the selected fixture's numbers
+function Pipeline({ edge, source, settleRes }) {
+  const fav = edge?.fair?.favourite
+  const steps = [
+    { n: 1, icon: '📡', title: 'Verified data',
+      desc: 'TxODDS de-margined World Cup odds — true-probability estimates with the bookmaker margin stripped out — fetched over a token-gated subscription on Solana devnet.',
+      live: fav ? `${fav.label} ${fav.pct.toFixed(0)}%` : (source === 'live' ? 'live' : 'sample') },
+    { n: 2, icon: '🧮', title: 'Fair line + price to beat',
+      desc: 'The agent turns each probability into its fair (break-even) decimal odds = 100 ÷ probability — the price a sportsbook must beat for a bet to have value — plus a one-line LLM read.',
+      live: fav ? `fair odds ${fav.fairOdds.toFixed(2)}` : '—' },
+    { n: 3, icon: '⛓️', title: 'Settled on-chain',
+      desc: 'The buyer pays the agent for that read through a Solana escrow (deposit → release), automatically on delivery and refundable after a deadline.',
+      live: settleRes?.ok ? `${settleRes.amountSol} SOL ✓` : `${SETTLE_SOL} SOL` },
+  ]
+  return html`
+    <section class="pipeline">
+      <div class="pipe-title">What this does, end to end <span>— verified data → a usable read → paid on-chain</span></div>
+      <div class="pipe-steps">
+        ${steps.map((s, i) => html`
+          <div class="pipe-step" key=${s.n}>
+            <div class="pipe-h"><span class="pipe-ico">${s.icon}</span><span class="pipe-n">0${s.n}</span><span class="pipe-live">${s.live}</span></div>
+            <h4>${s.title}</h4>
+            <p>${s.desc}</p>
+            ${i < 2 && html`<span class="pipe-arrow">→</span>`}
+          </div>`)}
+      </div>
+    </section>`
 }
 
 // the settlement pillar — a real devnet escrow deposit→release, linked on Explorer
@@ -308,12 +363,13 @@ function App() {
         <span class="dot"></span>${source === 'demo' ? 'sample fixtures · live odds quiet' : 'live · devnet · free World Cup tier'}
       </span>
       <h1><span class="trophy">🏆</span> World Cup Oracle</h1>
-      <p class="tagline">Verified TxODDS football data — fetched on Solana devnet, turned into a value call by an agent, and settled in SOL.</p>
+      <p class="tagline">An agent sells <b>verified</b> TxODDS odds: it fetches the de-margined fair line on Solana devnet,
+        turns it into <b>fair (break-even) odds + a plain read</b>, and gets paid through an on-chain escrow.</p>
       <div class="stats">
         <div class="stat"><b>${fixtures ? fixtures.length : '—'}</b><span>fixtures</span></div>
-        <div class="stat"><b>${comps || '—'}</b><span>competitions</span></div>
-        <div class="stat"><b>1X2</b><span>de-margined</span></div>
-        <div class="stat"><b>SOL</b><span>settled</span></div>
+        <div class="stat"><b>de-margined</b><span>fair line</span></div>
+        <div class="stat"><b>100÷p</b><span>break-even odds</span></div>
+        <div class="stat"><b>SOL</b><span>escrow-settled</span></div>
       </div>
       <nav class="tabs">
         <button class=${'tab' + (tab === 'oracle' ? ' on' : '')} onClick=${() => setTab('oracle')}>🏆 Oracle</button>
@@ -322,6 +378,7 @@ function App() {
     </header>
     ${tab === 'layers' ? html`<${LayersTab} />` : html`
     <main>
+      <${Pipeline} edge=${edge} source=${source} settleRes=${settleRes} />
       ${!fixtures && html`<p class="muted" style=${{ textAlign: 'center' }}>loading fixtures…</p>`}
       ${selected && html`
         <section class="featured">
@@ -352,7 +409,7 @@ function App() {
       </div>
     </main>
     <footer class="foot">
-      <p class="pillars">Verified <b>TxODDS</b> data · the agent's <b>LLM call</b> · settled by <b>Solana escrow</b>.</p>
+      <p class="pillars">Verified <b>TxODDS</b> fair line · the agent's <b>break-even read</b> · settled by <b>Solana escrow</b>.</p>
       <p>${source === 'live'
         ? `live · devnet · ${fixtures.length} fixture${fixtures.length === 1 ? '' : 's'} with verified odds`
         : source === 'demo'
