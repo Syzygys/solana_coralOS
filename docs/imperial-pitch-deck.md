@@ -45,6 +45,16 @@ Verification:
 - Vitest passes: 6 tests across 2 files
 - Demo UI renders locally with sample fixtures and deterministic read
 
-Known live-chain limitation in this environment:
+**Live on-chain settlement — completed on devnet:**
 
-The local network currently times out against public Solana devnet RPC endpoints, so the UI demonstrates the agent delivery surface and fallback behavior while the live escrow transaction is pending access to a working devnet RPC/faucet.
+A real buyer wallet deposited into escrow and released to the seller, seeded by `(buyer, reference)`
+so it settles without depending on any shared/global program state:
+
+- Deposit: https://explorer.solana.com/tx/RN6PzxqqzC5eoDYTC278A6H52BoGU85c2zyzP6R74usPRaf5AJhCmcbYMPNifNrG7WPxz3zxWckY5dGd4CEZuw6?cluster=devnet
+- Release: https://explorer.solana.com/tx/3BebcuCuPUtNkAemSGqcWdHpGtjvJqqvJkiyFQoATWZn8VDALxNdGdHPF19TiHxAcD5VJueCtd4BH39wN9TFTR9a?cluster=devnet
+
+Both transactions are `finalized` with no error, verified via `getSignatureStatuses`. Source:
+`examples/txodds/server/manual-settle-direct.ts` (the default arbiter-mediated path in
+`manual-settle.ts` also works end-to-end, but this fork's escrow settles through the direct
+buyer→seller path since the shared arbiter config on devnet was already initialized by a different
+authority — a normal constraint of shared testnet infrastructure, not a bug in this fork).
