@@ -15,6 +15,7 @@
  *   "fixtures"          -> upcoming World Cup / Int Friendlies fixtures              (data only)
  *   "odds <fixtureId>"  -> de-margined StablePrice odds for a fixture                (data only)
  *   "edge <fixtureId>"  -> odds + fair (break-even) odds + an LLM read               (the full loop)
+ *   "opportunity <url or brief>" -> Web3 bounty/grant go/no-go brief for a builder   (custom fork)
  *
  * Pillars in play (all reusable for your own service):
  *   - Data     verified TxLINE fixtures/odds, fetched on devnet (TxLineClient).
@@ -23,6 +24,50 @@
  */
 import { TxLineClient } from './txline.js'
 import { analyzeEdge } from './edge.js'
+
+function deliverOpportunityBrief(input: string): string {
+  const text = input.trim() || 'Unspecified Web3 bounty or grant opportunity'
+  const lower = text.toLowerCase()
+  const isContent = /\b(thread|tweet|content|post|article|video|design)\b/.test(lower)
+  const isBuild = /\b(hackathon|github|repo|demo|devnet|api|sdk|agent|build)\b/.test(lower)
+  const isAgentAllowed = /\bagent[_ -]?allowed\b|\bagent api\b/.test(lower)
+  const requiresPublicAction = /\bsubmit|post|tweet|fork|public|github|video|deck\b/.test(lower)
+  const hasReward = /\b(usdc|usdg|grant|prize|\$)\b/.test(lower)
+
+  const friction = [
+    requiresPublicAction ? 'external-visible action requires human confirmation' : '',
+    /\bkyc|captcha|mainnet|wallet sign\b/.test(lower) ? 'policy or wallet-signing risk' : '',
+    /\bcredit\b/.test(lower) ? 'web form may consume platform credit' : '',
+  ].filter(Boolean)
+
+  const score =
+    45 +
+    (hasReward ? 15 : 0) +
+    (isAgentAllowed ? 15 : 0) +
+    (isContent ? 10 : 0) +
+    (isBuild ? 8 : 0) -
+    friction.length * 8
+
+  const recommendation = score >= 70
+    ? 'prepare and submit after human approval'
+    : score >= 55
+      ? 'prepare locally, validate eligibility before submission'
+      : 'monitor only unless requirements improve'
+
+  return JSON.stringify({
+    service: 'web3-yield-opportunity-brief',
+    sellerPersona: 'Web3 Yield Agent - evaluates bounties, grants, quests and hackathons for low-cost builder ROI',
+    input: text,
+    score: Math.max(0, Math.min(100, score)),
+    classification: isBuild ? 'dev_project' : isContent ? 'content' : 'research',
+    recommendation,
+    requiredHumanChecks: friction,
+    deliverables: isBuild
+      ? ['repo link', 'demo proof', 'short pitch narrative']
+      : ['reviewed submission draft', 'public post or submission link'],
+    timestamp: new Date().toISOString(),
+  })
+}
 
 export async function deliverService(request: string): Promise<string> {
   const tokens = request.trim().split(/\s+/).filter(Boolean)
@@ -61,8 +106,13 @@ export async function deliverService(request: string): Promise<string> {
         return JSON.stringify({ service: 'txline-edge', ...edge, timestamp: new Date().toISOString() })
       }
 
+      case 'opportunity':
+      case 'brief': {
+        return deliverOpportunityBrief(rest.join(' '))
+      }
+
       default:
-        return JSON.stringify({ error: `unknown txline verb: ${verb} (try: fixtures | odds | edge)` })
+        return JSON.stringify({ error: `unknown txline verb: ${verb} (try: fixtures | odds | edge | opportunity)` })
     }
   } catch (e) {
     // Match the kit convention: failures come back as a string the buyer can read, not a throw.

@@ -11,6 +11,17 @@ import { Connection, PublicKey, Transaction, SystemProgram, LAMPORTS_PER_SOL } f
 const html = htm.bind(React.createElement)
 const PROXY = window.TXODDS_PROXY ?? 'http://localhost:8801'
 
+async function fetchJson(url, ms = 3500) {
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), ms)
+  try {
+    const res = await fetch(url, { signal: ctrl.signal })
+    return await res.json()
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 // -- flags + abbreviations (national teams) ----------------------------------
 const FLAGS = {
   brazil: 'br', argentina: 'ar', france: 'fr', england: 'gb-eng', spain: 'es', germany: 'de',
@@ -355,7 +366,7 @@ function App() {
     let timer = null
     let tries = 0
     const load = () => {
-      fetch(`${PROXY}/api/board`).then((r) => r.json()).then((d) => {
+      fetchJson(`${PROXY}/api/board`).then((d) => {
         if (!alive) return
         if (Array.isArray(d) && d.length) { setFixtures(d); setSource('live'); setIdx(0); return }
         throw new Error('no live fixtures yet')
@@ -389,7 +400,7 @@ function App() {
       let e = clientEdge(selected)
       if (source === 'live') {
         try {
-          const d = await (await fetch(`${PROXY}/api/edge?fixtureId=${selected.FixtureId}`)).json()
+          const d = await fetchJson(`${PROXY}/api/edge?fixtureId=${selected.FixtureId}`)
           if (d && d.analysis) e = d
         } catch { /* keep the client-side call */ }
       }
@@ -399,7 +410,7 @@ function App() {
       if (source !== 'live') return
       setSettling(true)
       try {
-        const s = await (await fetch(`${PROXY}/api/settle?fixtureId=${selected.FixtureId}&amount=${SETTLE_SOL}`)).json()
+        const s = await fetchJson(`${PROXY}/api/settle?fixtureId=${selected.FixtureId}&amount=${SETTLE_SOL}`, 8000)
         if (alive) setSettleRes(s)
       } catch (err) {
         if (alive) setSettleRes({ ok: false, error: String(err) })
