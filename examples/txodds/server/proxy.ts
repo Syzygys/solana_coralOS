@@ -15,6 +15,7 @@ import http from 'node:http'
 import fs from 'node:fs'
 import { createHash } from 'node:crypto'
 import axios from 'axios'
+import { ProxyAgent, setGlobalDispatcher } from 'undici'
 import * as anchor from '@coral-xyz/anchor'
 import {
   PublicKey, SystemProgram, Keypair, Connection, Transaction, sendAndConfirmTransaction, LAMPORTS_PER_SOL,
@@ -49,12 +50,23 @@ const ENV_PATH = process.env.KIT_ENV ?? fileURLToPath(new URL('../../../.env', i
   } catch { /* no .env - rely on the shell env */ }
 })()
 
+;(function configureProxy() {
+  const proxy = process.env.HTTPS_PROXY || process.env.HTTP_PROXY || process.env.ALL_PROXY
+  if (!proxy) return
+  setGlobalDispatcher(new ProxyAgent(proxy))
+  console.error(`[proxy] outbound fetch via ${proxy}`)
+})()
+
 // TxLINE devnet ids - overridable via .env (TXLINE_PROGRAM / TXLINE_MINT) so a TxODDS rotation is a
 // config change, not a code edit. Defaults are the values verified working on devnet (2026-06).
 const PROGRAM = new PublicKey(process.env.TXLINE_PROGRAM ?? '6pW64gN1s2uqjHkn1unFeEjAwJkPGHoppGvS715wyP2J')
 const MINT = new PublicKey(process.env.TXLINE_MINT ?? '4Zao8ocPhmMgq7PdsYWyxvqySMGx7xb9cMftPMkEokRG') // treasury mint
-const BASE = process.env.TXLINE_BASE_URL ?? 'https://txline-dev.txodds.com'
-const RPC = process.env.SOLANA_RPC_URL ?? 'https://api.devnet.solana.com'
+const envOr = (name: string, fallback: string): string => {
+  const value = process.env[name]?.trim()
+  return value || fallback
+}
+const BASE = envOr('TXLINE_BASE_URL', 'https://txline-dev.txodds.com')
+const RPC = envOr('SOLANA_RPC_URL', 'https://api.devnet.solana.com')
 const PORT = Number(process.env.PORT ?? 8801)
 
 const expl = (kind: 'tx' | 'address', id: string) => `https://explorer.solana.com/${kind}/${id}?cluster=devnet`

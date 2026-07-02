@@ -43,11 +43,30 @@ export function makeArbiter(signer: Keypair, rpcUrl: string): Program {
 }
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
+async function rpcOrRecoverSig(program: Program, send: () => Promise<string>): Promise<string> {
+  try {
+    return await send()
+  } catch (e) {
+    const message = (e as Error).message
+    const sig = message.match(/Check signature ([1-9A-HJ-NP-Za-km-z]{60,90})/)?.[1]
+    if (!sig) throw e
+    for (let i = 0; i < 120; i++) {
+      const status = (await program.provider.connection.getSignatureStatuses([sig], { searchTransactionHistory: true })).value[0]
+      if (status?.err) throw e
+      if (status?.confirmationStatus === 'confirmed' || status?.confirmationStatus === 'finalized') return sig
+      await new Promise((resolve) => setTimeout(resolve, 1000))
+    }
+    throw e
+  }
+}
+
 export async function initConfig(program: Program, admin: Keypair, arbiter: PublicKey): Promise<string> {
-  return (program.methods as any)
-    .initConfig(arbiter)
-    .accounts({ admin: admin.publicKey, config: configPda(), systemProgram: SystemProgram.programId })
-    .signers([admin]).rpc()
+  return rpcOrRecoverSig(program, () =>
+    (program.methods as any)
+      .initConfig(arbiter)
+      .accounts({ admin: admin.publicKey, config: configPda(), systemProgram: SystemProgram.programId })
+      .signers([admin]).rpc(),
+  )
 }
 
 export async function open(
@@ -56,13 +75,15 @@ export async function open(
   const vault = vaultPda(reference)
   const escrow = arbitratedEscrowPda(vault, reference)
   const deadline = new BN(Math.floor(Date.now() / 1000) + deadlineSecs)
-  return (program.methods as any)
-    .open(new BN(Math.round(amountSol * LAMPORTS_PER_SOL)), reference, deadline)
-    .accounts({
-      payer: payer.publicKey, vault, seller, escrow,
-      escrowProgram: ESCROW_PROGRAM_ID, systemProgram: SystemProgram.programId,
-    })
-    .signers([payer]).rpc()
+  return rpcOrRecoverSig(program, () =>
+    (program.methods as any)
+      .open(new BN(Math.round(amountSol * LAMPORTS_PER_SOL)), reference, deadline)
+      .accounts({
+        payer: payer.publicKey, vault, seller, escrow,
+        escrowProgram: ESCROW_PROGRAM_ID, systemProgram: SystemProgram.programId,
+      })
+      .signers([payer]).rpc(),
+  )
 }
 
 export async function arbitrateRelease(
@@ -70,10 +91,12 @@ export async function arbitrateRelease(
 ): Promise<string> {
   const vault = vaultPda(reference)
   const escrow = arbitratedEscrowPda(vault, reference)
-  return (program.methods as any)
-    .arbitrateRelease(reference)
-    .accounts({ arbiter: arbiter.publicKey, config: configPda(), vault, seller, escrow, escrowProgram: ESCROW_PROGRAM_ID })
-    .signers([arbiter]).rpc()
+  return rpcOrRecoverSig(program, () =>
+    (program.methods as any)
+      .arbitrateRelease(reference)
+      .accounts({ arbiter: arbiter.publicKey, config: configPda(), vault, seller, escrow, escrowProgram: ESCROW_PROGRAM_ID })
+      .signers([arbiter]).rpc(),
+  )
 }
 
 export async function arbitrateRefund(
@@ -81,11 +104,13 @@ export async function arbitrateRefund(
 ): Promise<string> {
   const vault = vaultPda(reference)
   const escrow = arbitratedEscrowPda(vault, reference)
-  return (program.methods as any)
-    .arbitrateRefund(reference)
-    .accounts({
-      arbiter: arbiter.publicKey, config: configPda(), vault, payer, escrow,
-      escrowProgram: ESCROW_PROGRAM_ID, systemProgram: SystemProgram.programId,
-    })
-    .signers([arbiter]).rpc()
+  return rpcOrRecoverSig(program, () =>
+    (program.methods as any)
+      .arbitrateRefund(reference)
+      .accounts({
+        arbiter: arbiter.publicKey, config: configPda(), vault, payer, escrow,
+        escrowProgram: ESCROW_PROGRAM_ID, systemProgram: SystemProgram.programId,
+      })
+      .signers([arbiter]).rpc(),
+  )
 }

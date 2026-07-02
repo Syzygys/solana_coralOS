@@ -29,19 +29,40 @@ export async function makeProgram(buyer: Keypair, rpcUrl: string): Promise<Progr
 }
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
+async function rpcOrRecoverSig(program: Program, send: () => Promise<string>): Promise<string> {
+  try {
+    return await send()
+  } catch (e) {
+    const message = (e as Error).message
+    const sig = message.match(/Check signature ([1-9A-HJ-NP-Za-km-z]{60,90})/)?.[1]
+    if (!sig) throw e
+    for (let i = 0; i < 120; i++) {
+      const status = (await program.provider.connection.getSignatureStatuses([sig], { searchTransactionHistory: true })).value[0]
+      if (status?.err) throw e
+      if (status?.confirmationStatus === 'confirmed' || status?.confirmationStatus === 'finalized') return sig
+      await new Promise((resolve) => setTimeout(resolve, 1000))
+    }
+    throw e
+  }
+}
+
 export async function deposit(
   program: Program, buyer: Keypair, seller: PublicKey, reference: PublicKey, amountSol: number, deadlineSecs: number,
 ): Promise<string> {
   const deadline = new BN(Math.floor(Date.now() / 1000) + deadlineSecs)
-  return (program.methods as any)
-    .initialize(new BN(Math.round(amountSol * LAMPORTS_PER_SOL)), reference, deadline)
-    .accounts({ buyer: buyer.publicKey, seller, escrow: escrowPda(buyer.publicKey, reference) })
-    .signers([buyer]).rpc()
+  return rpcOrRecoverSig(program, () =>
+    (program.methods as any)
+      .initialize(new BN(Math.round(amountSol * LAMPORTS_PER_SOL)), reference, deadline)
+      .accounts({ buyer: buyer.publicKey, seller, escrow: escrowPda(buyer.publicKey, reference) })
+      .signers([buyer]).rpc(),
+  )
 }
 
 export async function release(program: Program, buyer: Keypair, seller: PublicKey, reference: PublicKey): Promise<string> {
-  return (program.methods as any)
-    .release()
-    .accounts({ buyer: buyer.publicKey, seller, escrow: escrowPda(buyer.publicKey, reference) })
-    .signers([buyer]).rpc()
+  return rpcOrRecoverSig(program, () =>
+    (program.methods as any)
+      .release()
+      .accounts({ buyer: buyer.publicKey, seller, escrow: escrowPda(buyer.publicKey, reference) })
+      .signers([buyer]).rpc(),
+  )
 }
